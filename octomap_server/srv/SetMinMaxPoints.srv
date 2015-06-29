@@ -1,0 +1,3 @@
+geometry_msgs/Point p_min
+geometry_msgs/Point p_max
+---
