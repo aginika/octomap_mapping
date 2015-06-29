@@ -141,6 +141,7 @@ OctomapServer::OctomapServer(ros::NodeHandle private_nh_)
   m_markerPub = m_nh.advertise<visualization_msgs::MarkerArray>("occupied_cells_vis_array", 1, m_latchedTopics);
   m_binaryMapPub = m_nh.advertise<Octomap>("octomap_binary", 1, m_latchedTopics);
   m_fullMapPub = m_nh.advertise<Octomap>("octomap_full", 1, m_latchedTopics);
+  m_unknownPointCloudPub = m_nh.advertise<sensor_msgs::PointCloud2>("octomap_unknown_point_cloud_centers", 1, m_latchedTopics);
   m_pointCloudPub = m_nh.advertise<sensor_msgs::PointCloud2>("octomap_point_cloud_centers", 1, m_latchedTopics);
   m_mapPub = m_nh.advertise<nav_msgs::OccupancyGrid>("projected_map", 5, m_latchedTopics);	
   m_fmarkerPub = m_nh.advertise<visualization_msgs::MarkerArray>("free_cells_vis_array", 1, m_latchedTopics);
@@ -602,6 +603,27 @@ void OctomapServer::publishAll(const ros::Time& rostime){
     m_fmarkerPub.publish(freeNodesVis);
   }
 
+  point3d_list unknown_leaves;
+  double minX, minY, minZ, maxX, maxY, maxZ;
+  m_octree->getMetricMin(minX, minY, minZ);
+  m_octree->getMetricMax(maxX, maxY, maxZ);
+  point3d p_min(minX, minY, minZ);
+  point3d p_max(maxX, maxY, maxZ);
+
+  m_octree->getUnknownLeafCenters(unknown_leaves, p_min, p_max);
+  pcl::PointCloud<pcl::PointXYZ> unknownCloud;
+  
+  for(point3d_list::iterator it = unknown_leaves.begin(); it != unknown_leaves.end(); it++){
+    float x = (*it).x();
+    float y = (*it).y();
+    float z = (*it).z();
+    unknownCloud.push_back(pcl::PointXYZ(x, y, z));
+  }
+  sensor_msgs::PointCloud2 unknown_ros_cloud;
+  pcl::toROSMsg (unknownCloud, unknown_ros_cloud);
+  unknown_ros_cloud.header.frame_id = m_worldFrameId;
+  unknown_ros_cloud.header.stamp = rostime;
+  m_unknownPointCloudPub.publish(unknown_ros_cloud);
 
   // finish pointcloud:
   if (publishPointCloud){
