@@ -92,6 +92,20 @@ OctomapServer::OctomapServer(ros::NodeHandle private_nh_)
   private_nh.param("compress_map", m_compressMap, m_compressMap);
   private_nh.param("incremental_2D_projection", m_incrementalUpdate, m_incrementalUpdate);
 
+  double minx, miny, minz, maxx, maxy, maxz;
+  private_nh.param("min_point/x", minx, 0.0);
+  private_nh.param("min_point/y", miny, 0.0);
+  private_nh.param("min_point/z", minz, 0.0);
+  private_nh.param("max_point/x", maxx, 1.0);
+  private_nh.param("max_point/y", maxy, 1.0);
+  private_nh.param("max_point/z", maxz, 1.0);
+  min_point.x = minx;
+  min_point.y = miny;
+  min_point.z = minz;
+  max_point.x = maxx;
+  max_point.y = maxy;
+  max_point.z = maxz;
+
   if (m_filterGroundPlane && (m_pointcloudMinZ > 0.0 || m_pointcloudMaxZ < 0.0)){
 	  ROS_WARN_STREAM("You enabled ground filtering but incoming pointclouds will be pre-filtered in ["
 			  <<m_pointcloudMinZ <<", "<< m_pointcloudMaxZ << "], excluding the ground level z=0. "
@@ -145,6 +159,7 @@ OctomapServer::OctomapServer(ros::NodeHandle private_nh_)
   m_pointCloudPub = m_nh.advertise<sensor_msgs::PointCloud2>("octomap_point_cloud_centers", 1, m_latchedTopics);
   m_mapPub = m_nh.advertise<nav_msgs::OccupancyGrid>("projected_map", 5, m_latchedTopics);	
   m_fmarkerPub = m_nh.advertise<visualization_msgs::MarkerArray>("free_cells_vis_array", 1, m_latchedTopics);
+  m_umarkerPub = m_nh.advertise<visualization_msgs::MarkerArray>("unknown_cells_vis_array", 1, m_latchedTopics);
 
   m_pointCloudSub = new message_filters::Subscriber<sensor_msgs::PointCloud2> (m_nh, "cloud_in", 5);
   m_tfPointCloudSub = new tf::MessageFilter<sensor_msgs::PointCloud2> (*m_pointCloudSub, m_tfListener, m_worldFrameId, 5);
@@ -154,6 +169,7 @@ OctomapServer::OctomapServer(ros::NodeHandle private_nh_)
   m_octomapFullService = m_nh.advertiseService("octomap_full", &OctomapServer::octomapFullSrv, this);
   m_clearBBXService = private_nh.advertiseService("clear_bbx", &OctomapServer::clearBBXSrv, this);
   m_resetService = private_nh.advertiseService("reset", &OctomapServer::resetSrv, this);
+  m_setMinMaxPointsService = m_nh.advertiseService("set_min_max_points", &OctomapServer::setMinMaxPointsSrv, this);
 
   dynamic_reconfigure::Server<OctomapServerConfig>::CallbackType f;
 
@@ -603,12 +619,12 @@ void OctomapServer::publishAll(const ros::Time& rostime){
     m_fmarkerPub.publish(freeNodesVis);
   }
 
+  visualization_msgs::MarkerArray unknownNodesVis;
+  unknownNodesVis.markers.resize(m_maxTreeDepth);
+
   point3d_list unknown_leaves;
-  double minX, minY, minZ, maxX, maxY, maxZ;
-  m_octree->getMetricMin(minX, minY, minZ);
-  m_octree->getMetricMax(maxX, maxY, maxZ);
-  point3d p_min(minX, minY, minZ);
-  point3d p_max(maxX, maxY, maxZ);
+  point3d p_min(min_point.x, min_point.y, min_point.z);
+  point3d p_max(max_point.x, max_point.y, max_point.z);
 
   m_octree->getUnknownLeafCenters(unknown_leaves, p_min, p_max);
   pcl::PointCloud<pcl::PointXYZ> unknownCloud;
@@ -618,7 +634,38 @@ void OctomapServer::publishAll(const ros::Time& rostime){
     float y = (*it).y();
     float z = (*it).z();
     unknownCloud.push_back(pcl::PointXYZ(x, y, z));
+
+    geometry_msgs::Point cubeCenter;
+    cubeCenter.x = x;
+    cubeCenter.y = y;
+    cubeCenter.z = z;
+    if (m_useHeightMap){
+      double minX, minY, minZ, maxX, maxY, maxZ;
+      m_octree->getMetricMin(minX, minY, minZ);
+      m_octree->getMetricMax(maxX, maxY, maxZ);
+      double h = (1.0 - std::min(std::max((cubeCenter.z-minZ)/ (maxZ - minZ), 0.0), 1.0)) *m_colorFactor;
+      unknownNodesVis.markers[0].colors.push_back(heightMapColor(h));
+    }
+    unknownNodesVis.markers[0].points.push_back(cubeCenter);
   }
+
+  double size = m_octree->getNodeSize(m_maxTreeDepth);
+  unknownNodesVis.markers[0].header.frame_id = m_worldFrameId;
+  unknownNodesVis.markers[0].header.stamp = rostime;
+  unknownNodesVis.markers[0].ns = "map";
+  unknownNodesVis.markers[0].id = 0;
+  unknownNodesVis.markers[0].type = visualization_msgs::Marker::CUBE_LIST;
+  unknownNodesVis.markers[0].scale.x = size;
+  unknownNodesVis.markers[0].scale.y = size;
+  unknownNodesVis.markers[0].scale.z = size;
+  unknownNodesVis.markers[0].color = m_colorFree;
+  
+  if (unknownNodesVis.markers[0].points.size() > 0)
+    unknownNodesVis.markers[0].action = visualization_msgs::Marker::ADD;
+  else
+    unknownNodesVis.markers[0].action = visualization_msgs::Marker::DELETE;
+  m_umarkerPub.publish(unknownNodesVis);
+
   sensor_msgs::PointCloud2 unknown_ros_cloud;
   pcl::toROSMsg (unknownCloud, unknown_ros_cloud);
   unknown_ros_cloud.header.frame_id = m_worldFrameId;
@@ -644,6 +691,14 @@ void OctomapServer::publishAll(const ros::Time& rostime){
   double total_elapsed = (ros::WallTime::now() - startTime).toSec();
   ROS_DEBUG("Map publishing in OctomapServer took %f sec", total_elapsed);
 
+}
+
+  bool OctomapServer::setMinMaxPointsSrv(octomap_server::SetMinMaxPoints::Request& req, octomap_server::SetMinMaxPoints::Response& resp)
+{
+  ROS_ERROR("Recieved Service");
+  min_point = req.p_min;
+  max_point = req.p_max;
+  return true;
 }
 
 

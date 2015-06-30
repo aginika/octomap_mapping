@@ -13,7 +13,7 @@ set(PACKAGE_DEPENDENCIES
   octomap_ros
   octomap_msgs
   dynamic_reconfigure
-  nodelet  
+  nodelet
 )
 
 
@@ -31,6 +31,9 @@ include_directories(
   ${OCTOMAP_INCLUDE_DIRS}
 )
 
+add_service_files(FILES SetMinMaxPoints.srv)
+generate_messages(DEPENDENCIES
+  geometry_msgs)
 
 generate_dynamic_reconfigure_options(cfg/OctomapServer.cfg)
 
