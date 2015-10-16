@@ -170,10 +170,13 @@ OctomapServer::OctomapServer(ros::NodeHandle private_nh_)
   m_tfPointCloudSub = new tf::MessageFilter<sensor_msgs::PointCloud2> (*m_pointCloudSub, m_tfListener, m_worldFrameId, 5);
   m_tfPointCloudSub->registerCallback(boost::bind(&OctomapServer::insertCloudCallback, this, _1));
 
+  m_rayCastingService = m_nh.advertiseService("raycast", &OctomapServer::rayCastSrv, this);
+  ROS_INFO("Ray casting");
   m_octomapBinaryService = m_nh.advertiseService("octomap_binary", &OctomapServer::octomapBinarySrv, this);
   m_octomapFullService = m_nh.advertiseService("octomap_full", &OctomapServer::octomapFullSrv, this);
   m_clearBBXService = private_nh.advertiseService("clear_bbx", &OctomapServer::clearBBXSrv, this);
   m_resetService = private_nh.advertiseService("reset", &OctomapServer::resetSrv, this);
+
 
   dynamic_reconfigure::Server<OctomapServerConfig>::CallbackType f;
 
@@ -736,6 +739,32 @@ bool OctomapServer::clearBBXSrv(BBXSrv::Request& req, BBXSrv::Response& resp){
 
   publishAll(ros::Time::now());
 
+  return true;
+}
+
+bool OctomapServer::rayCastSrv(octomap_msgs::RayCast::Request& req, octomap_msgs::RayCast::Response& resp){
+  for(int i = 0; i < req.directions.size(); i++){
+    geometry_msgs::PoseStamped origin_world;
+    m_tfListener.transformPose(m_worldFrameId, req.origins[i], origin_world);
+    geometry_msgs::PoseStamped direction_world;
+    m_tfListener.transformPose(m_worldFrameId, req.directions[i], direction_world);
+
+    octomap::point3d origin_pt(origin_world.pose.position.x,
+			       origin_world.pose.position.y,
+			       origin_world.pose.position.z);
+    octomap::point3d direction_pt(direction_world.pose.position.x,
+				  direction_world.pose.position.y,
+				  direction_world.pose.position.z);
+    octomap::point3d end_pt(0,0,0);
+    m_octree->castRay(origin_pt, direction_pt, end_pt);
+    geometry_msgs::PoseStamped end;
+    end.pose.position.x = end_pt.x();
+    end.pose.position.y = end_pt.y();
+    end.pose.position.z = end_pt.z();
+    end.pose.orientation.w = 1;
+    end.header = origin_world.header;
+    resp.ends.push_back(end);
+  }
   return true;
 }
 
