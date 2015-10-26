@@ -101,7 +101,8 @@ OctomapServer::OctomapServer(ros::NodeHandle private_nh_)
   private_nh.param("sensor_model/max", thresMax, 0.97);
   private_nh.param("compress_map", m_compressMap, m_compressMap);
   private_nh.param("incremental_2D_projection", m_incrementalUpdate, m_incrementalUpdate);
-
+  private_nh.param("enable_change_detection", m_enableChangeDetection, m_enableChangeDetection);
+  
   if (m_filterGroundPlane && (m_pointcloudMinZ > 0.0 || m_pointcloudMaxZ < 0.0)){
     ROS_WARN_STREAM("You enabled ground filtering but incoming pointclouds will be pre-filtered in ["
               <<m_pointcloudMinZ <<", "<< m_pointcloudMaxZ << "], excluding the ground level z=0. "
@@ -128,6 +129,8 @@ OctomapServer::OctomapServer(ros::NodeHandle private_nh_)
   m_octree->setProbMiss(probMiss);
   m_octree->setClampingThresMin(thresMin);
   m_octree->setClampingThresMax(thresMax);
+  if(m_enableChangeDetection)
+    m_octree->enableChangeDetection(true);
   m_treeDepth = m_octree->getTreeDepth();
   m_maxTreeDepth = m_treeDepth;
   m_gridmap.info.resolution = m_res;
@@ -165,6 +168,8 @@ OctomapServer::OctomapServer(ros::NodeHandle private_nh_)
   m_pointCloudPub = m_nh.advertise<sensor_msgs::PointCloud2>("octomap_point_cloud_centers", 1, m_latchedTopics);
   m_mapPub = m_nh.advertise<nav_msgs::OccupancyGrid>("projected_map", 5, m_latchedTopics);
   m_fmarkerPub = m_nh.advertise<visualization_msgs::MarkerArray>("free_cells_vis_array", 1, m_latchedTopics);
+
+  m_changedPub = m_nh.advertise<visualization_msgs::MarkerArray>("changed_cells_vis_array", 1, m_latchedTopics);
 
   m_pointCloudSub = new message_filters::Subscriber<sensor_msgs::PointCloud2> (m_nh, "cloud_in", 5);
   m_tfPointCloudSub = new tf::MessageFilter<sensor_msgs::PointCloud2> (*m_pointCloudSub, m_tfListener, m_worldFrameId, 5);
@@ -684,6 +689,61 @@ void OctomapServer::publishAll(const ros::Time& rostime){
   if (publishFullMap)
     publishFullOctoMap(rostime);
 
+
+  //Changed Information
+  if(m_enableChangeDetection){
+    visualization_msgs::MarkerArray changedNodesVis;
+    changedNodesVis.markers.resize(2);
+
+    // ROS_ERROR("Changed num %d", m_octree->numChangesDetected());
+    for(KeyBoolMap::const_iterator it = m_octree->changedKeysBegin();
+	it != m_octree->changedKeysEnd();
+	it++){
+      octomap::point3d pt = m_octree->keyToCoord(it->first);
+      geometry_msgs::Point cubeCenter;
+      cubeCenter.x = pt.x();
+      cubeCenter.y = pt.y();
+      cubeCenter.z = pt.z();
+      //New Node
+      if(it->second){
+	changedNodesVis.markers[0].points.push_back(cubeCenter);
+      }else{
+	changedNodesVis.markers[1].points.push_back(cubeCenter);
+      }
+    }
+
+    //Reset Changed
+    m_octree->resetChangeDetection();
+
+
+    std_msgs::ColorRGBA m_colorChanged;
+    m_colorChanged.r = 1;
+    m_colorChanged.g = 0;
+    m_colorChanged.b = 0;
+    m_colorChanged.a = 1;
+
+    //Update Infos
+    for (unsigned i= 0; i < changedNodesVis.markers.size(); ++i){
+      double size = m_octree->getNodeSize(m_maxTreeDepth);
+
+      changedNodesVis.markers[i].header.frame_id = m_worldFrameId;
+      changedNodesVis.markers[i].header.stamp = rostime;
+      changedNodesVis.markers[i].ns = "map";
+      changedNodesVis.markers[i].id = i;
+      changedNodesVis.markers[i].type = visualization_msgs::Marker::CUBE_LIST;
+      changedNodesVis.markers[i].scale.x = size;
+      changedNodesVis.markers[i].scale.y = size;
+      changedNodesVis.markers[i].scale.z = size;
+      changedNodesVis.markers[i].color =  (i == 0) ? m_colorFree : m_colorChanged;
+
+      if (changedNodesVis.markers[i].points.size() > 0)
+        changedNodesVis.markers[i].action = visualization_msgs::Marker::ADD;
+      else
+        changedNodesVis.markers[i].action = visualization_msgs::Marker::DELETE;
+    }
+    
+    m_changedPub.publish(changedNodesVis);
+  }
 
   double total_elapsed = (ros::WallTime::now() - startTime).toSec();
   ROS_DEBUG("Map publishing in OctomapServer took %f sec", total_elapsed);
