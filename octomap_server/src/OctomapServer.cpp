@@ -756,7 +756,7 @@ bool OctomapServer::rayCastSrv(octomap_msgs::RayCast::Request& req, octomap_msgs
 				  direction_world.pose.position.y,
 				  direction_world.pose.position.z);
     octomap::point3d end_pt(0,0,0);
-    m_octree->castRay(origin_pt, direction_pt, end_pt);
+    m_octree->castRay(origin_pt, direction_pt - origin_pt, end_pt);
     geometry_msgs::PoseStamped end;
     end.pose.position.x = end_pt.x();
     end.pose.position.y = end_pt.y();
